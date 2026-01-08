@@ -1,0 +1,71 @@
+server:
+  port: 2635
+spring:
+#  cloud:
+#    stream:
+#      source: output
+#      binders:
+#        input-in-0:
+#          group: someGroup
+#        consumer:
+#          batch-mode: true
+#      rabbit:
+#        bindings:
+#          input-in-0:
+#            consumer:
+#              enable-batching: true
+#              batch-size: 10
+#              receive-timeout: 200
+#  # RabbitMQ配置
+#  rabbitmq:
+#    host: 10.1.100.16
+#    port: 5672
+#    username: admin
+#    password: 123456
+#    listener:
+#      simple:
+#        # 手动确认模式
+#        acknowledge-mode: manual
+#        retry:
+#          # 开启重试
+#          enabled: true
+#          # 最大重试次数
+#          max-attempts: 5
+#          # 首次重试时间间隔
+#          initial-interval: 2000
+#          # 重试时间间隔递增
+#          max-interval: 20000
+
+  application:
+    name: test
+  datasource:
+    dynamic:
+      primary: master
+      strict: false
+      datasource:
+        master:
+          driver-class-name: oracle.jdbc.OracleDriver
+          url: jdbc:oracle:thin:@10.51.250.164:1521:ORCL
+          username: wfjt
+          password: WfEdcNutanix09
+
+
+xxl:
+  job:
+    admin:
+      addresses: http://127.0.0.1:9901/xxl-job-admin
+      accessToken: default_token
+      timeout: 3
+    executor:
+      appname: ${spring.application.name}
+      address:
+      ip:
+      port: 9911
+      logpath: /xxl-job/jobhandler
+      logretentiondays: 30
+      excludedpackage:
+
+knife4j:
+  enable: true
+  setting:
+    language: zh_cn
