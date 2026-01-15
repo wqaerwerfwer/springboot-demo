@@ -9,17 +9,10 @@ import com.sun.jna.win32.StdCallLibrary;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
-import org.lionsoul.ip2region.DataBlock;
-import org.lionsoul.ip2region.DbConfig;
-import org.lionsoul.ip2region.DbSearcher;
-import org.lionsoul.ip2region.Util;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 
-import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -34,16 +27,13 @@ import java.util.List;
 public class FanucReadDevices {
 
     public void readDevice() {
-        ShortByReference handle=new ShortByReference();
-        System.out.println(handle.getValue());
-        System.out.println(handle);
+        ShortByReference handle = new ShortByReference();
         short result = DLibrary.INSTANCE.cnc_allclibhndl3("10.1.13.152", (short) 8193, 10, handle);
         System.out.println(handle.getValue());
-        System.out.println("返回结果: " + result);
-        System.out.println(readMainProgram(handle.getValue()));
-        System.out.println(readCurrentExecProgramWithError(handle.getValue()));
-        System.out.println(handle.getValue());
-        System.out.println(readExecProgramWithError(handle.getValue(),1024));
+        System.out.println(handle);
+        System.out.println(result);
+        DownloadStartInfo downloadStartInfo = startDownloadWithError(handle.getValue(), DownloadDataType.NC_PROGRAM);
+        System.out.println(downloadStartInfo);
     }
 
     /**
@@ -418,51 +408,65 @@ public class FanucReadDevices {
          * @return 返回状态码，0(EW_OK)表示成功，非0表示失败
          */
         short cnc_exeprgname(short FlibHndl, ODBEXEPRG exeprg);
+
+        /**
+         * 通知开始上传NC数据（NC程序、刀具偏置等）到数据窗口库内部逻辑
+         * （此函数必须在cnc_download3之前执行）
+         *
+         * @param FlibHndl 库句柄 (unsigned short)
+         * @param type     数据类型 (0:NC程序, 1:刀具偏置数据, 2:参数, 3:螺距误差补偿数据, 4:自定义宏变量, 5:工件零点偏置数据, 18:旋转台动态夹具偏置)
+         * @return 返回状态码，0(EW_OK)表示成功，非0表示失败
+         */
+        short cnc_dwnstart3(short FlibHndl, short type);
+
+        /**
+         * 下载NC数据（NC程序、刀具偏置等）到CNC
+         * （此函数必须在cnc_dwnstart3之后执行）
+         *
+         * @param FlibHndl 库句柄 (unsigned short)
+         * @param data     指向要下载的数据缓冲区的指针
+         * @param length   要下载的数据长度
+         * @return 返回状态码，0(EW_OK)表示成功，非0表示失败
+         */
+        short cnc_download3(short FlibHndl, Memory data, int length);
+
+        /**
+         * 结束NC数据下载过程
+         * （此函数必须在下载完成后执行，用于结束cnc_dwnstart3开启的下载过程）
+         *
+         * @param FlibHndl 库句柄 (unsigned short)
+         * @return 返回状态码，0(EW_OK)表示成功，非0表示失败
+         */
+        short cnc_dwnend3(short FlibHndl);
+    }
+
+    /**
+     * 下载启动信息结果类
+     */
+    @Setter
+    @Getter
+    public static class DownloadStartInfo {
+        private boolean success;
+        private short dataType;  // 数据类型
+        private short errorCode;
+        private String errorMessage;
+
+        @Override
+        public String toString() {
+            if (success) {
+                return "DownloadStartInfo{success=true, dataType=" + dataType + "}";
+            } else {
+                return "DownloadStartInfo{success=false, errorCode=" + errorCode +
+                        ", errorMessage='" + errorMessage + "'" +
+                        '}';
+            }
+        }
     }
 
     static {
         DLL_PATH = "Fwlib64.dll";
         System.out.println(DLL_PATH);
         System.out.println("===================");
-    }
-
-    //    @PostConstruct()
-    public void init() throws IOException {
-//        Resource resource = resourceLoader.getResource("classpath:dll/Fwlib64.dll");
-//        String path =resource
-//        File file = resource.getFile();
-//        System.out.println(file.getAbsolutePath());
-        System.out.println("--------------------");
-        ShortByReference handle = new ShortByReference();
-        short result = DLibrary.INSTANCE.cnc_allclibhndl3("10.1.13.152", (short) 8193, 10, handle);
-        System.out.println("返回结果: " + result);
-        System.out.println(readMainProgram(handle.getValue()));
-//        System.out.println(readBlockCount(handle.getValue()));
-//        System.out.println(readMainProgramWithError(handle.getValue()));
-//        System.out.println(readBlockCountWithError(handle.getValue()));
-//        System.out.println(readExecProgramWithError(handle.getValue(),1024));
-//        System.out.println(readDncDiag(handle.getValue()));
-
-        // 测试读取参数功能
-        short paramNumber = 10; // 示例参数号
-        short axis = 0;         // 无轴
-        short length = 6;       // 示例长度 (4 + 2 * 1) 用于word类型单轴参数
-//        System.out.println(readParameterWithError(handle.getValue(), paramNumber, axis, length));
-
-        // 测试读取宏变量功能
-        short macroNumber = 3901;  // 示例宏变量号 #1
-        short macroLength = 10; // ODBM结构体大小
-
-        // 测试读取程序号功能
-        System.out.println(readProgramNumberWithError(handle.getValue()));
-
-        // 测试读取报警状态功能
-        System.out.println(readAlarmStatusWithError(handle.getValue()));
-        while (true) {
-            log.info("{}", readMacroVariableWithError(handle.getValue(), macroNumber, macroLength));
-            log.info("{}", readCurrentExecProgram(handle.getValue()));
-            log.info("{}", readExecProgramWithError(handle.getValue(), 1024));
-        }
     }
 
     /**
@@ -597,43 +601,13 @@ public class FanucReadDevices {
     /**
      * 块计数器信息结果类
      */
+    @Setter
+    @Getter
     public static class BlockCountInfo {
         private boolean success;
         private Long blockCount;
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public Long getBlockCount() {
-            return blockCount;
-        }
-
-        public void setBlockCount(Long blockCount) {
-            this.blockCount = blockCount;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -733,6 +707,8 @@ public class FanucReadDevices {
     /**
      * 执行程序信息结果类
      */
+    @Setter
+    @Getter
     public static class ExecProgramInfo {
         private boolean success;
         private String programData;
@@ -740,54 +716,6 @@ public class FanucReadDevices {
         private int blockNumber;
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public String getProgramData() {
-            return programData;
-        }
-
-        public void setProgramData(String programData) {
-            this.programData = programData;
-        }
-
-        public int getActualLength() {
-            return actualLength;
-        }
-
-        public void setActualLength(int actualLength) {
-            this.actualLength = actualLength;
-        }
-
-        public int getBlockNumber() {
-            return blockNumber;
-        }
-
-        public void setBlockNumber(int blockNumber) {
-            this.blockNumber = blockNumber;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -879,6 +807,8 @@ public class FanucReadDevices {
     /**
      * DNC 诊断信息结果类
      */
+    @Setter
+    @Getter
     public static class DncDiagInfo {
         private boolean success;
         private short ctrlWord;      // 控制字
@@ -890,86 +820,6 @@ public class FanucReadDevices {
         private long totalSize;      // 已输出的字符总数
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public short getCtrlWord() {
-            return ctrlWord;
-        }
-
-        public void setCtrlWord(short ctrlWord) {
-            this.ctrlWord = ctrlWord;
-        }
-
-        public short getCanWord() {
-            return canWord;
-        }
-
-        public void setCanWord(short canWord) {
-            this.canWord = canWord;
-        }
-
-        public String getNcFile() {
-            return ncFile;
-        }
-
-        public void setNcFile(String ncFile) {
-            this.ncFile = ncFile;
-        }
-
-        public int getReadPtr() {
-            return readPtr;
-        }
-
-        public void setReadPtr(int readPtr) {
-            this.readPtr = readPtr;
-        }
-
-        public int getWritePtr() {
-            return writePtr;
-        }
-
-        public void setWritePtr(int writePtr) {
-            this.writePtr = writePtr;
-        }
-
-        public int getEmptyCount() {
-            return emptyCount;
-        }
-
-        public void setEmptyCount(int emptyCount) {
-            this.emptyCount = emptyCount;
-        }
-
-        public long getTotalSize() {
-            return totalSize;
-        }
-
-        public void setTotalSize(long totalSize) {
-            this.totalSize = totalSize;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -1095,6 +945,8 @@ public class FanucReadDevices {
     /**
      * PMC 信息结果类
      */
+    @Setter
+    @Getter
     public static class PmcInfo {
         private boolean success;
         private int startAddress;  // 起始 PMC 地址
@@ -1103,62 +955,6 @@ public class FanucReadDevices {
         private short size;         // 数据大小
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public int getStartAddress() {
-            return startAddress;
-        }
-
-        public void setStartAddress(int startAddress) {
-            this.startAddress = startAddress;
-        }
-
-        public int getEndAddress() {
-            return endAddress;
-        }
-
-        public void setEndAddress(int endAddress) {
-            this.endAddress = endAddress;
-        }
-
-        public short getUnit() {
-            return unit;
-        }
-
-        public void setUnit(short unit) {
-            this.unit = unit;
-        }
-
-        public short getSize() {
-            return size;
-        }
-
-        public void setSize(short size) {
-            this.size = size;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -1360,6 +1156,8 @@ public class FanucReadDevices {
     /**
      * 参数信息结果类
      */
+    @Setter
+    @Getter
     public static class ParameterInfo {
         private boolean success;
         private int paramNumber;  // 参数号
@@ -1368,62 +1166,6 @@ public class FanucReadDevices {
         private Object data;      // 参数数据
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public int getParamNumber() {
-            return paramNumber;
-        }
-
-        public void setParamNumber(int paramNumber) {
-            this.paramNumber = paramNumber;
-        }
-
-        public short getParamType() {
-            return paramType;
-        }
-
-        public void setParamType(short paramType) {
-            this.paramType = paramType;
-        }
-
-        public short getAxis() {
-            return axis;
-        }
-
-        public void setAxis(short axis) {
-            this.axis = axis;
-        }
-
-        public Object getData() {
-            return data;
-        }
-
-        public void setData(Object data) {
-            this.data = data;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -1533,6 +1275,8 @@ public class FanucReadDevices {
     /**
      * 宏变量信息结果类
      */
+    @Setter
+    @Getter
     public static class MacroVariableInfo {
         private boolean success;
         private int variableNumber;  // 变量号
@@ -1540,54 +1284,6 @@ public class FanucReadDevices {
         private short decimalPlaces; // 小数位数
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public int getVariableNumber() {
-            return variableNumber;
-        }
-
-        public void setVariableNumber(int variableNumber) {
-            this.variableNumber = variableNumber;
-        }
-
-        public int getValue() {
-            return value;
-        }
-
-        public void setValue(int value) {
-            this.value = value;
-        }
-
-        public short getDecimalPlaces() {
-            return decimalPlaces;
-        }
-
-        public void setDecimalPlaces(short decimalPlaces) {
-            this.decimalPlaces = decimalPlaces;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         /**
          * 计算实际的浮点值
@@ -1709,52 +1405,14 @@ public class FanucReadDevices {
     /**
      * 程序号信息结果类
      */
+    @Setter
+    @Getter
     public static class ProgramNumberInfo {
         private boolean success;
         private int runningProgramNumber;  // 正在运行的程序号
         private int mainProgramNumber;     // 主程序号
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public int getRunningProgramNumber() {
-            return runningProgramNumber;
-        }
-
-        public void setRunningProgramNumber(int runningProgramNumber) {
-            this.runningProgramNumber = runningProgramNumber;
-        }
-
-        public int getMainProgramNumber() {
-            return mainProgramNumber;
-        }
-
-        public void setMainProgramNumber(int mainProgramNumber) {
-            this.mainProgramNumber = mainProgramNumber;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -1829,6 +1487,8 @@ public class FanucReadDevices {
     }
 
 
+    @Setter
+    @Getter
     public static class AlarmStatusInfo {
         private boolean success;
         private int alarmStatus;  // 报警状态位
@@ -1836,45 +1496,10 @@ public class FanucReadDevices {
         private String errorMessage;
 
 
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public int getAlarmStatus() {
-            return alarmStatus;
-        }
-
-        public void setAlarmStatus(int alarmStatus) {
-            this.alarmStatus = alarmStatus;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
-
-
         @Override
         public String toString() {
             if (success) {
-                StringBuilder sb = new StringBuilder();
-                sb.append("AlarmStatusInfo{success=true, alarmStatus=" + alarmStatus + "}");
-                return sb.toString();
+                return "AlarmStatusInfo{success=true, alarmStatus=" + alarmStatus + "}";
             } else {
                 return "AlarmStatusInfo{success=false, errorCode=" + errorCode +
                         ", errorMessage='" + errorMessage + "'" +
@@ -1887,52 +1512,14 @@ public class FanucReadDevices {
      * 当前执行程序信息结果类
      * 用于封装从CNC读取的当前执行程序信息
      */
+    @Setter
+    @Getter
     public static class ProgramNameInfo {
         private boolean success;
         private String programName;  // 程序名称
         private int programNumber;   // 程序号
         private short errorCode;
         private String errorMessage;
-
-        public boolean isSuccess() {
-            return success;
-        }
-
-        public void setSuccess(boolean success) {
-            this.success = success;
-        }
-
-        public String getProgramName() {
-            return programName;
-        }
-
-        public void setProgramName(String programName) {
-            this.programName = programName;
-        }
-
-        public int getProgramNumber() {
-            return programNumber;
-        }
-
-        public void setProgramNumber(int programNumber) {
-            this.programNumber = programNumber;
-        }
-
-        public short getErrorCode() {
-            return errorCode;
-        }
-
-        public void setErrorCode(short errorCode) {
-            this.errorCode = errorCode;
-        }
-
-        public String getErrorMessage() {
-            return errorMessage;
-        }
-
-        public void setErrorMessage(String errorMessage) {
-            this.errorMessage = errorMessage;
-        }
 
         @Override
         public String toString() {
@@ -2071,27 +1658,387 @@ public class FanucReadDevices {
         }
     }
 
-    public String getIpCityInfo1(String ip) {
-        log.info("===> Login IP : {}", ip);
-        String dbPath = FanucReadDevices.class.getClassLoader().getResource("").getPath() + "ip2region\\ip2region.db";
-        log.info("===> dbPath  : {}", dbPath);
-        File file = new File(dbPath);
-        if (!file.exists()) {
-            return null;
-        }
-        try {
-            DbConfig config = new DbConfig();
-            DbSearcher searcher = new DbSearcher(config, dbPath);
-            Method method = searcher.getClass().getMethod("btreeSearch", String.class);
-            if (!Util.isIpAddress(ip)) {
-                return null;
+    /**
+     * 下载信息结果类
+     */
+    @Setter
+    @Getter
+    public static class DownloadInfo {
+        private boolean success;
+        private int dataLength;  // 下载的数据长度
+        private short errorCode;
+        private String errorMessage;
+
+        @Override
+        public String toString() {
+            if (success) {
+                return "DownloadInfo{success=true, dataLength=" + dataLength + "}";
+            } else {
+                return "DownloadInfo{success=false, errorCode=" + errorCode +
+                        ", errorMessage='" + errorMessage + "'" +
+                        '}';
             }
-            DataBlock dataBlock = (DataBlock) method.invoke(searcher, ip);
-            return dataBlock.getRegion();
-        } catch (Exception e) {
-            e.printStackTrace();
         }
-        return null;
     }
 
+    /**
+     * 下载结束信息结果类
+     */
+    @Setter
+    @Getter
+    public static class DownloadEndInfo {
+        private boolean success;
+        private short errorCode;
+        private String errorMessage;
+
+        @Override
+        public String toString() {
+            if (success) {
+                return "DownloadEndInfo{success=true}";
+            } else {
+                return "DownloadEndInfo{success=false, errorCode=" + errorCode +
+                        ", errorMessage='" + errorMessage + "'" +
+                        '}';
+            }
+        }
+    }
+
+    /**
+     * CNC数据下载类型枚举
+     */
+    @Getter
+    public enum DownloadDataType {
+        NC_PROGRAM((short) 0, "NC程序"),
+        TOOL_OFFSET_DATA((short) 1, "刀具偏置数据"),
+        PARAMETER((short) 2, "参数"),
+        PITCH_ERROR_COMPENSATION_DATA((short) 3, "螺距误差补偿数据"),
+        CUSTOM_MACRO_VARIABLES((short) 4, "自定义宏变量"),
+        WORK_ZERO_OFFSET_DATA((short) 5, "工件零点偏置数据"),
+        ROTARY_TABLE_DYNAMIC_FIXTURE_OFFSET((short) 18, "旋转台动态夹具偏置");
+
+        private final short value;
+        private final String description;
+
+        DownloadDataType(short value, String description) {
+            this.value = value;
+            this.description = description;
+        }
+
+        public static DownloadDataType fromValue(short value) {
+            for (DownloadDataType type : DownloadDataType.values()) {
+                if (type.value == value) {
+                    return type;
+                }
+            }
+            throw new IllegalArgumentException("未知的数据类型: " + value);
+        }
+    }
+
+    /**
+     * 通知开始上传NC数据（NC程序、刀具偏置等）到数据窗口库内部逻辑
+     * （此函数必须在cnc_download3之前执行）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param type   数据类型 (0:NC程序, 1:刀具偏置数据, 2:参数, 3:螺距误差补偿数据, 4:自定义宏变量, 5:工件零点偏置数据, 18:旋转台动态夹具偏置)
+     * @return 下载启动信息，如果失败则返回 null
+     */
+    public DownloadStartInfo startDownload(short handle, short type) {
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_dwnstart3(handle, type);
+
+        if (result == 0) {
+            // 成功
+            DownloadStartInfo info = new DownloadStartInfo();
+            info.setSuccess(true);
+            info.setDataType(type);
+            return info;
+        } else {
+            // 失败
+            System.err.println("开始下载失败，错误代码: " + result);
+            return null;
+        }
+    }
+
+    /**
+     * 通知开始上传NC数据（NC程序、刀具偏置等）到数据窗口库内部逻辑（带错误处理）
+     * （此函数必须在cnc_download3之前执行）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param type   数据类型 (0:NC程序, 1:刀具偏置数据, 2:参数, 3:螺距误差补偿数据, 4:自定义宏变量, 5:工件零点偏置数据, 18:旋转台动态夹具偏置)
+     * @return 包含下载启动信息和错误代码的结果对象
+     */
+    public DownloadStartInfo startDownloadWithError(short handle, short type) {
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_dwnstart3(handle, type);
+
+        DownloadStartInfo info = new DownloadStartInfo();
+        info.setErrorCode(result);
+
+        if (result == 0) {
+            // 成功
+            info.setSuccess(true);
+            info.setDataType(type);
+        } else {
+            // 失败
+            info.setSuccess(false);
+            info.setErrorMessage(getDownloadStartErrorDescription(result));
+        }
+
+        return info;
+    }
+
+    /**
+     * 通知开始上传NC数据（NC程序、刀具偏置等）到数据窗口库内部逻辑（带错误处理）
+     * 使用枚举类型指定数据类型
+     *
+     * @param handle   库句柄（通过 cnc_allclibhndl3 获取）
+     * @param dataType 数据类型枚举
+     * @return 包含下载启动信息和错误代码的结果对象
+     */
+    public DownloadStartInfo startDownloadWithError(short handle, DownloadDataType dataType) {
+        return startDownloadWithError(handle, dataType.getValue());
+    }
+
+    /**
+     * 获取下载启动错误描述
+     *
+     * @param errorCode 错误代码
+     * @return 错误描述文本
+     */
+    public String getDownloadStartErrorDescription(short errorCode) {
+        switch (errorCode) {
+            case 0:
+                return "操作成功";
+            case -1:
+                return "设备忙 (EW_BUSY) - 可能原因：cnc_dwnstart3/cnc_vrfstart函数已执行，需要先调用cnc_dwnend3/cnc_vrfend结束；或CNC侧存在后台编辑处理";
+            case 4:
+                return "数据属性错误 (EW_ATTRIB) - 数据类型不合法";
+            case 6:
+                return "无选项 (EW_NOOPT) - 目标数据需要特定选项（如自定义宏变量、螺距误差补偿数据等）";
+            case 9:
+                return "CNC参数错误 (EW_PARAM) - 参数设置不正确（如输入设备参数错误）";
+            case 12:
+                return "CNC模式错误 (EW_MODE) - CNC当前模式不适合此操作";
+            case 13:
+                return "CNC执行被拒绝 (EW_REJECT) - CNC正在加工，无法进行下载操作";
+            case 15:
+                return "报警状态 (EW_ALARM) - CNC处于报警状态，需要先复位报警";
+            case 17:
+                return "密码保护 (EW_PASSWD) - 指定的CNC数据受密码保护，无法写入";
+            default:
+                return "未知错误代码: " + errorCode;
+        }
+    }
+
+    /**
+     * 下载NC数据（NC程序、刀具偏置等）到CNC
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param data   要下载的数据
+     * @param length 要下载的数据长度
+     * @return 下载信息，如果失败则返回 null
+     */
+    public DownloadInfo downloadData(short handle, byte[] data, int length) {
+        // 创建内存缓冲区
+        Memory dataBuffer = new Memory(length);
+        // 将数据复制到缓冲区
+        dataBuffer.write(0, data, 0, Math.min(data.length, length));
+
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_download3(handle, dataBuffer, length);
+
+        if (result == 0) {
+            // 成功
+            DownloadInfo info = new DownloadInfo();
+            info.setSuccess(true);
+            info.setDataLength(length);
+            return info;
+        } else {
+            // 失败
+            System.err.println("下载数据失败，错误代码: " + result);
+            return null;
+        }
+    }
+
+    /**
+     * 下载NC程序到CNC
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle  库句柄（通过 cnc_allclibhndl3 获取）
+     * @param program NC程序内容
+     * @return 下载信息，如果失败则返回 null
+     */
+    public DownloadInfo downloadProgram(short handle, String program) {
+        byte[] programBytes;
+        try {
+            // 使用Shift-JIS编码，因为这是Fanuc CNC常用的编码
+            programBytes = program.getBytes("SJIS");
+        } catch (Exception e) {
+            // 如果SJIS不可用，使用UTF-8作为备选
+            programBytes = program.getBytes(StandardCharsets.UTF_8);
+        }
+        // 确保数据以NULL结尾
+        byte[] dataWithNullTerminator = new byte[programBytes.length + 1];
+        System.arraycopy(programBytes, 0, dataWithNullTerminator, 0, programBytes.length);
+        dataWithNullTerminator[programBytes.length] = 0; // 添加NULL终止符
+
+        return downloadData(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+    }
+
+    /**
+     * 下载NC数据（NC程序、刀具偏置等）到CNC（带错误处理）
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param data   要下载的数据
+     * @param length 要下载的数据长度
+     * @return 包含下载信息和错误代码的结果对象
+     */
+    public DownloadInfo downloadDataWithError(short handle, byte[] data, int length) {
+        // 创建内存缓冲区
+        Memory dataBuffer = new Memory(length);
+        // 将数据复制到缓冲区
+        dataBuffer.write(0, data, 0, Math.min(data.length, length));
+
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_download3(handle, dataBuffer, length);
+
+        DownloadInfo info = new DownloadInfo();
+        info.setErrorCode(result);
+
+        if (result == 0) {
+            // 成功
+            info.setSuccess(true);
+            info.setDataLength(length);
+        } else {
+            // 失败
+            info.setSuccess(false);
+            info.setErrorMessage(getDownloadErrorDescription(result));
+        }
+
+        return info;
+    }
+
+    /**
+     * 下载NC程序到CNC（带错误处理）
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle  库句柄（通过 cnc_allclibhndl3 获取）
+     * @param program NC程序内容
+     * @return 包含下载信息和错误代码的结果对象
+     */
+    public DownloadInfo downloadProgramWithError(short handle, String program) {
+        byte[] programBytes;
+        try {
+            // 使用Shift-JIS编码，因为这是Fanuc CNC常用的编码
+            programBytes = program.getBytes("SJIS");
+        } catch (Exception e) {
+            // 如果SJIS不可用，使用UTF-8作为备选
+            programBytes = program.getBytes(StandardCharsets.UTF_8);
+        }
+        // 确保数据以NULL结尾
+        byte[] dataWithNullTerminator = new byte[programBytes.length + 1];
+        System.arraycopy(programBytes, 0, dataWithNullTerminator, 0, programBytes.length);
+        dataWithNullTerminator[programBytes.length] = 0; // 添加NULL终止符
+
+        return downloadDataWithError(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+    }
+
+    /**
+     * 结束NC数据下载过程
+     * （此函数必须在下载完成后执行，用于结束cnc_dwnstart3开启的下载过程）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @return 下载结束信息，如果失败则返回 null
+     */
+    public DownloadEndInfo endDownload(short handle) {
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_dwnend3(handle);
+
+        if (result == 0) {
+            // 成功
+            DownloadEndInfo info = new DownloadEndInfo();
+            info.setSuccess(true);
+            return info;
+        } else {
+            // 失败
+            System.err.println("结束下载失败，错误代码: " + result);
+            return null;
+        }
+    }
+
+    /**
+     * 结束NC数据下载过程（带错误处理）
+     * （此函数必须在下载完成后执行，用于结束cnc_dwnstart3开启的下载过程）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @return 包含下载结束信息和错误代码的结果对象
+     */
+    public DownloadEndInfo endDownloadWithError(short handle) {
+        // 调用 DLL 函数
+        short result = DLibrary.INSTANCE.cnc_dwnend3(handle);
+
+        DownloadEndInfo info = new DownloadEndInfo();
+        info.setErrorCode(result);
+
+        if (result == 0) {
+            // 成功
+            info.setSuccess(true);
+        } else {
+            // 失败
+            info.setSuccess(false);
+            info.setErrorMessage(getDownloadEndErrorDescription(result));
+        }
+
+        return info;
+    }
+
+    /**
+     * 获取下载结束错误描述
+     *
+     * @param errorCode 错误代码
+     * @return 错误描述文本
+     */
+    public String getDownloadEndErrorDescription(short errorCode) {
+        switch (errorCode) {
+            case 0:
+                return "操作成功";
+            case -1:
+                return "设备忙 (EW_BUSY) - 可能原因：下载过程尚未完成或已被其他操作占用";
+            case 12:
+                return "CNC模式错误 (EW_MODE) - CNC当前模式不适合此操作";
+            case 15:
+                return "报警状态 (EW_ALARM) - CNC处于报警状态，需要先复位报警";
+            default:
+                return "未知错误代码: " + errorCode;
+        }
+    }
+
+    /**
+     * 获取下载错误描述
+     *
+     * @param errorCode 错误代码
+     * @return 错误描述文本
+     */
+    public String getDownloadErrorDescription(short errorCode) {
+        switch (errorCode) {
+            case 0:
+                return "操作成功";
+            case -1:
+                return "设备忙 (EW_BUSY) - 可能原因：当前操作正在进行中";
+            case 1:
+                return "数据错误 (EW_DATA) - 传输的数据格式不正确或包含非法字符";
+            case 12:
+                return "CNC模式错误 (EW_MODE) - CNC当前模式不适合此操作";
+            case 13:
+                return "CNC执行被拒绝 (EW_REJECT) - CNC正在加工，无法进行下载操作";
+            case 15:
+                return "报警状态 (EW_ALARM) - CNC处于报警状态，需要先复位报警";
+            case 17:
+                return "密码保护 (EW_PASSWD) - 指定的CNC数据受密码保护，无法写入";
+            default:
+                return "未知错误代码: " + errorCode;
+        }
+    }
 }
