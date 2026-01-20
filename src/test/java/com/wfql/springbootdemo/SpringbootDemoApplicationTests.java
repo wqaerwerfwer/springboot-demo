@@ -1,19 +1,27 @@
 package com.wfql.springbootdemo;
 
-import io.netty.util.internal.NativeLibraryLoader;
+import cn.hutool.http.HttpRequest;
+import lombok.extern.slf4j.Slf4j;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 
-import java.io.InputStream;
-
+@Slf4j
 @SpringBootTest
 class SpringbootDemoApplicationTests {
 
+
+    private static void run() {
+        while (true) {
+            String body = HttpRequest.get("http://127.0.0.1:2635/fanuc/conect").execute().body();
+            log.debug("{}", body);
+        }
+    }
+
     @Test
     void contextLoads() {
-//        System.loadLibrary("Fwlib64"); // 不需要.dll后缀
-        InputStream in = NativeLibraryLoader.class.getClassLoader().getResourceAsStream("/Fwlib64.dll");
-
+        Thread thread = new Thread(SpringbootDemoApplicationTests::run);
+        thread.start();
     }
+
 
 }

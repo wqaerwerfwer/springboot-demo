@@ -2,10 +2,12 @@ package com.wfql.springbootdemo.fanuc;
 
 import com.sun.jna.Memory;
 import com.sun.jna.Native;
+import com.sun.jna.Pointer;
 import com.sun.jna.Structure;
 import com.sun.jna.ptr.IntByReference;
 import com.sun.jna.ptr.ShortByReference;
 import com.sun.jna.win32.StdCallLibrary;
+import com.wfql.springbootdemo.jna.*;
 import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
@@ -13,28 +15,423 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
 
+import java.io.File;
+import com.wfql.springbootdemo.fanuc.ProgramInfoResult;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+
+import static com.wfql.springbootdemo.jna.ReadProgramDirectory.readProgramDirectoryWithError;
 
 /**
  * @Package com.wfql.springbootdemo.fanuc
  * @Author guoqing.ling
  * @Date 2026/1/7 10:31
+ * <p>
+ * Fanuc CNC设备交互类
+ * 提供与Fanuc CNC设备的各种交互功能，包括读取程序、参数、宏变量等
  */
 @Slf4j
 @Component
 public class FanucReadDevices {
 
-    public void readDevice() {
-        ShortByReference handle = new ShortByReference();
-        short result = DLibrary.INSTANCE.cnc_allclibhndl3("10.1.13.152", (short) 8193, 10, handle);
-        System.out.println(handle.getValue());
-        System.out.println(handle);
-        System.out.println(result);
-        DownloadStartInfo downloadStartInfo = startDownloadWithError(handle.getValue(), DownloadDataType.NC_PROGRAM);
-        System.out.println(downloadStartInfo);
+    private static final DLibraryService dLibraryService;
+
+    static {
+        dLibraryService = DLibraryService.INSTANCE;
     }
+
+
+    public void readDevice() {
+
+        DedicatedDeviceManager dedicatedDeviceManager = new DedicatedDeviceManager("10.1.13.152", (short) 8193);
+        boolean flag = dedicatedDeviceManager.establishConnection();
+
+        boolean connected = dedicatedDeviceManager.connected;
+        log.info("connected :{}", connected);
+        if (connected) {
+            ProgramInfoResult programInfoResult = readProgramInfo(dedicatedDeviceManager.getReusableHandle().getValue(), 355, (short) 1);
+            System.out.println(programInfoResult);
+            // 读取程序目录
+            PrgrmDirInfo programList = readProgramDirectoryWithError(dLibraryService, dedicatedDeviceManager.getReusableHandle().getValue());
+
+            if (programList.isSuccess()) {
+                log.info("设备程序列表读取成功，共找到 {} 个程序", programList.getPrograms().size());
+
+                // 输出程序信息
+                for (int i = 0; i < programList.getPrograms().size(); i++) {
+                    var program = programList.getPrograms().get(i);
+                    log.info("  程序 {}: 编号={}, 长度={}, 注释='{}'", i + 1, program.getNumber(), program.getLength(), program.getComment());
+                }
+            } else {
+                log.error("设备程序列表读取失败: {}", programList.getErrorMessage());
+            }
+        }
+    }
+
+    /**
+     * 读取所有NC程序列表
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @return 程序目录信息，如果失败则返回 null
+     */
+    public PrgrmDirInfo readAllPrograms(short handle) {
+        return readProgramDirectoryWithError(dLibraryService, handle);
+    }
+
+    /**
+     * 读取所有NC程序列表（带错误处理）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @return 包含程序目录信息和错误代码的结果对象
+     */
+    public PrgrmDirInfo readAllProgramsWithError(short handle) {
+        return readProgramDirectoryWithError(dLibraryService, handle);
+    }
+
+    /**
+     * 读取指定范围内的NC程序列表
+     *
+     * @param handle       库句柄（通过 cnc_allclibhndl3 获取）
+     * @param startProgram 起始程序号
+     * @param endProgram   结束程序号
+     * @param type         信息类型: 0-程序号, 1-程序号和注释, 2-程序号、注释、日期和大小
+     * @return 程序目录信息
+     */
+    public PrgrmDirInfo readProgramsInRange(short handle, short startProgram, short endProgram, short type) {
+        PrgrmDirInfo result = new PrgrmDirInfo();
+
+        try {
+            // 使用 cnc_rdprogdir 方法读取指定范围的程序
+            short resultCode = dLibraryService.cnc_rdprogdir(handle, type, startProgram, endProgram, (short) 256, new PRGDIR());
+
+            if (resultCode == 0) {
+                result.setSuccess(true);
+                result.setErrorCode(resultCode);
+                // 这里需要根据实际返回数据解析程序信息
+                // 目前使用 readProgramDirectoryWithError 方法替代
+                return readProgramDirectoryWithError(dLibraryService, handle);
+            } else {
+                result.setSuccess(false);
+                result.setErrorCode(resultCode);
+                result.setErrorMessage("读取指定范围程序失败，错误代码: " + resultCode);
+                return result;
+            }
+        } catch (Exception e) {
+            log.error("读取指定范围程序时发生异常: {}", e.getMessage(), e);
+            result.setSuccess(false);
+            result.setErrorMessage("读取指定范围程序时发生异常: " + e.getMessage());
+            return result;
+        }
+    }
+
+    /**
+     * 读取所有NC程序列表（使用cnc_rdprogdir4方法，提供更多信息）
+     * 如果cnc_rdprogdir4不可用，则回退到使用cnc_rdprogdir3方法
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param type   信息类型: 0-程序号, 1-程序号和注释, 2-程序号、注释、日期和大小
+     * @return 程序目录信息
+     */
+    public PrgrmDirInfo readAllProgramsWithDetails(short handle, short type) {
+        PrgrmDirInfo result = new PrgrmDirInfo();
+
+        try {
+            int maxPrograms = 1000;  // 最大程序数量
+            ShortByReference numProg = new ShortByReference((short) maxPrograms);  // 程序数量
+
+            // 分配内存给PRGDIR4数组
+            int structSize = com.sun.jna.Native.getNativeSize(PRGDIR4.class, null);
+            Memory buffer = new Memory(structSize * maxPrograms);
+            PRGDIR4[] prgDirArray = new PRGDIR4[maxPrograms];
+
+            // 初始化数组元素
+            for (int i = 0; i < maxPrograms; i++) {
+                prgDirArray[i] = new PRGDIR4(buffer.share(i * structSize));
+            }
+
+            // 调用FOCAS函数读取程序目录
+            short ret = dLibraryService.cnc_rdprogdir4(handle, type, 1, numProg, prgDirArray[0]);
+
+            result.setErrorCode(ret);
+
+            if (ret == 0) { // 成功
+                result.setSuccess(true);
+
+                // 解析返回的数据
+                int actualNum = numProg.getValue();
+                List<PrgrmInfo> programs = parsePRGDIR4Array(prgDirArray, actualNum);
+                result.setPrograms(programs);
+            } else {
+                log.warn("cnc_rdprogdir4调用失败，错误代码: {}，尝试使用cnc_rdprogdir3方法", ret);
+                // 如果cnc_rdprogdir4失败，尝试使用cnc_rdprogdir3方法
+                result = readProgramDirectoryWithError(dLibraryService, handle);
+                if (!result.isSuccess()) {
+                    result.setSuccess(false);
+                    result.setErrorMessage("读取程序目录失败，cnc_rdprogdir4错误代码: " + ret + ", 错误描述: " + getCommonErrorDescription(ret));
+                }
+            }
+
+            return result;
+        } catch (Exception e) {
+            log.error("读取详细程序目录时发生异常: {}", e.getMessage(), e);
+            // 如果发生异常，尝试使用readProgramDirectoryWithError方法
+            PrgrmDirInfo fallbackResult = readProgramDirectoryWithError(dLibraryService, handle);
+            if (fallbackResult.isSuccess()) {
+                log.info("使用回退方法成功读取程序目录");
+                return fallbackResult;
+            } else {
+                result.setSuccess(false);
+                result.setErrorMessage("读取详细程序目录时发生异常: " + e.getMessage());
+                return result;
+            }
+        }
+    }
+
+    /**
+     * 解析PRGDIR4数组中的程序目录数据
+     *
+     * @param prgDirArray PRGDIR4数组实例
+     * @param count       需要解析的元素数量
+     * @return 解析后的程序信息列表
+     */
+    private List<PrgrmInfo> parsePRGDIR4Array(PRGDIR4[] prgDirArray, int count) {
+        List<PrgrmInfo> programs = new ArrayList<>();
+
+        try {
+            for (int i = 0; i < Math.min(count, prgDirArray.length); i++) {
+                PRGDIR4 entry = prgDirArray[i];
+
+                // 将字节数组转换为字符串（处理注释）
+                String comment = parseStringFromBytes(entry.comment);
+
+                // 检查程序号是否有效
+                if (entry.number > 0) {
+                    programs.add(new PrgrmInfo(entry.number, entry.length, comment));
+                }
+            }
+        } catch (Exception e) {
+            log.error("解析PRGDIR4数据时发生异常: {}", e.getMessage(), e);
+        }
+
+        return programs;
+    }
+
+    /**
+     * 从字节数组解析字符串（处理C风格字符串的NULL终止符）
+     *
+     * @param bytes 字节数组
+     * @return 解析出的字符串
+     */
+    private String parseStringFromBytes(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) {
+            return "";
+        }
+
+        int len = 0;
+        for (int i = 0; i < bytes.length; i++) {
+            if (bytes[i] == 0) {
+                break;
+            }
+            len++;
+        }
+
+        if (len == 0) {
+            return "";
+        }
+
+        return new String(bytes, 0, len, StandardCharsets.UTF_8).trim();
+    }
+        
+    /**
+     * 读取特定程序的信息
+     * 
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param progNo 程序号
+     * @param infoType 信息类型: 0-程序信息, 1-程序信息(带注释)
+     * @return 程序信息
+     */
+    public ProgramInfoResult readProgramInfo(short handle, int progNo, short infoType) {
+        ProgramInfoResult result = new ProgramInfoResult();
+            
+        try {
+            // 创建ODBINFO结构体实例
+            ODBINFO odbinfo = new ODBINFO();
+                
+            // 调用FOCAS函数读取程序信息
+            short ret = dLibraryService.cnc_rdproginfo(handle, progNo, infoType, odbinfo);
+                
+            result.setErrorCode(ret);
+                
+            if (ret == 0) { // 成功
+                result.setSuccess(true);
+                    
+                // 读取结构体数据
+                odbinfo.read();
+                    
+                // 设置程序信息
+                result.setProgramNumber(odbinfo.number);
+                result.setProgramLength(odbinfo.length);
+                result.setComment(parseStringFromBytes(odbinfo.comment));
+            } else {
+                result.setSuccess(false);
+                result.setErrorMessage("读取程序信息失败，错误代码: " + ret + ", 错误描述: " + getCommonErrorDescription(ret));
+            }
+                
+            return result;
+        } catch (Exception e) {
+            log.error("读取程序信息时发生异常: {}", e.getMessage(), e);
+            result.setSuccess(false);
+            result.setErrorMessage("读取程序信息时发生异常: " + e.getMessage());
+            return result;
+        }
+    }
+        
+    /**
+     * 读取特定程序的信息（带错误处理）
+     * 
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param progNo 程序号
+     * @return 程序信息
+     */
+    public ProgramInfoResult readProgramInfo(short handle, int progNo) {
+        return readProgramInfo(handle, progNo, (short) 1); // 默认使用类型1（带注释）
+    }
+        
+    /**
+     * 自动检测并读取所有程序列表
+     * 根据设备支持情况尝试不同的API方法
+     * 
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @return 程序目录信息
+     */
+    public PrgrmDirInfo readAllProgramsAutoDetect(short handle) {
+        PrgrmDirInfo result;
+            
+        // 首先尝试使用最详细的API
+        log.debug("尝试使用 cnc_rdprogdir4 API");
+        result = readAllProgramsWithDetails(handle, (short) 1);
+        if (result.isSuccess()) {
+            log.info("成功使用 cnc_rdprogdir4 读取程序列表");
+            return result;
+        } else {
+            log.debug("cnc_rdprogdir4 失败: {}, 尝试使用 readProgramDirectoryWithError", result.getErrorMessage());
+        }
+            
+        // 如果上面失败，尝试使用 readProgramDirectoryWithError
+        result = readProgramDirectoryWithError(dLibraryService, handle);
+        if (result.isSuccess()) {
+            log.info("成功使用 readProgramDirectoryWithError 读取程序列表");
+            return result;
+        } else {
+            log.debug("readProgramDirectoryWithError 失败: {}", result.getErrorMessage());
+        }
+            
+        // 如果还是失败，尝试使用 readAllPrograms
+        result = readAllPrograms(handle);
+        if (result != null && result.isSuccess()) {
+            log.info("成功使用 readAllPrograms 读取程序列表");
+            return result;
+        } else {
+            log.error("所有读取程序列表的方法均失败");
+            result = new PrgrmDirInfo();
+            result.setSuccess(false);
+            result.setErrorMessage("所有读取程序列表的方法均失败");
+            return result;
+        }
+    }
+
+    /**
+     * 读取特定程序信息的完整示例方法
+     * 连接到CNC设备并读取指定程序的信息
+     * 
+     * @param ipAddress CNC设备IP地址
+     * @param port CNC设备端口
+     * @param progNo 要读取的程序号
+     * @return 程序信息结果
+     */
+    public ProgramInfoResult readSingleProgramInfo(String ipAddress, short port, int progNo) {
+        DedicatedDeviceManager dedicatedDeviceManager = new DedicatedDeviceManager(ipAddress, port);
+        boolean flag = dedicatedDeviceManager.establishConnection();
+
+        if (!flag) {
+            ProgramInfoResult result = new ProgramInfoResult();
+            result.setSuccess(false);
+            result.setErrorMessage("连接设备失败");
+            return result;
+        }
+
+        boolean connected = dedicatedDeviceManager.connected;
+        log.info("连接状态 :{}", connected);
+        
+        if (connected) {
+            // 读取指定程序信息
+            ProgramInfoResult programInfo = readProgramInfo(
+                dedicatedDeviceManager.getReusableHandle().getValue(), progNo);
+            
+            if (programInfo.isSuccess()) {
+                log.info("程序信息读取成功: 编号={}, 长度={}, 注释='{}'", 
+                    programInfo.getProgramNumber(), programInfo.getProgramLength(), programInfo.getComment());
+            } else {
+                log.error("程序信息读取失败: {}", programInfo.getErrorMessage());
+            }
+            
+            // 断开连接
+         dLibraryService.cnc_freelibhndl(dedicatedDeviceManager.getReusableHandle().getValue());
+            
+            return programInfo;
+        } else {
+            ProgramInfoResult result = new ProgramInfoResult();
+            result.setSuccess(false);
+            result.setErrorMessage("设备未连接");
+            return result;
+        }
+    }
+
+    @Getter
+    static class DedicatedDeviceManager {
+        private final String ipAddress;
+        private final Short port;
+        private final ShortByReference reusableHandle;
+        private volatile boolean connected;
+        private volatile long lastUsedTime;
+
+        public DedicatedDeviceManager(String ipAddress, Short port) {
+            this.ipAddress = ipAddress;
+            this.port = port;
+            this.reusableHandle = new ShortByReference();
+            this.connected = false;
+        }
+
+        public void setConnected(boolean connected) {
+            this.connected = connected;
+            this.lastUsedTime = System.currentTimeMillis();
+        }
+
+        public boolean establishConnection() {
+            try {
+                short result = DLibrary.INSTANCE.cnc_allclibhndl3(this.ipAddress, this.port, 5, this.reusableHandle);
+
+                if (result == 0) {
+                    connected = true;
+                    lastUsedTime = System.currentTimeMillis();
+                    log.debug("设备 {}:{} 连接成功，句柄值: {}", ipAddress, port, reusableHandle.getValue());
+                    return true;
+                } else {
+                    log.warn("设备 {}:{} 连接失败，错误码: {}", ipAddress, port, result);
+                    return false;
+                }
+            } catch (Exception e) {
+                log.error("时发生异常: {}", e.getMessage());
+                return false;
+            }
+        }
+    }
+
 
     /**
      * ODBPMCINF 结构体 - PMC 数据信息
@@ -54,7 +451,7 @@ public class FanucReadDevices {
         }
 
         // 使用 Pointer 构造（如果需要）
-        public ODBPMCINF(com.sun.jna.Pointer p) {
+        public ODBPMCINF(Pointer p) {
             super(p);
             read();
         }
@@ -90,22 +487,14 @@ public class FanucReadDevices {
             super();
         }
 
-        public ODBDNCDGN(com.sun.jna.Pointer p) {
+        public ODBDNCDGN(Pointer p) {
             super(p);
             read();
         }
 
         @Override
         protected List<String> getFieldOrder() {
-            return Arrays.asList(
-                    "ctrl_word",
-                    "can_word",
-                    "nc_file",
-                    "read_ptr",
-                    "write_ptr",
-                    "empty_cnt",
-                    "total_size"
-            );
+            return Arrays.asList("ctrl_word", "can_word", "nc_file", "read_ptr", "write_ptr", "empty_cnt", "total_size");
         }
     }
 
@@ -125,7 +514,7 @@ public class FanucReadDevices {
             super();
         }
 
-        public REALPRM(com.sun.jna.Pointer p) {
+        public REALPRM(Pointer p) {
             super(p);
             read();
         }
@@ -168,7 +557,7 @@ public class FanucReadDevices {
             super();
         }
 
-        public IODBPSD(com.sun.jna.Pointer p) {
+        public IODBPSD(Pointer p) {
             super(p);
             read();
         }
@@ -183,6 +572,106 @@ public class FanucReadDevices {
     private ResourceLoader resourceLoader;
 
     private static final String DLL_RESOURCE_PATH = "dll/Fwlib64.dll";
+
+    /**
+     * 读取所有程序的完整示例方法
+     * 连接到CNC设备并读取所有程序列表
+     *
+     * @param ipAddress CNC设备IP地址
+     * @param port      CNC设备端口
+     * @return 程序目录信息
+     */
+    public PrgrmDirInfo readAllProgramsFromDevice(String ipAddress, short port) {
+        DedicatedDeviceManager dedicatedDeviceManager = new DedicatedDeviceManager(ipAddress, port);
+        boolean flag = dedicatedDeviceManager.establishConnection();
+
+        if (!flag) {
+            PrgrmDirInfo result = new PrgrmDirInfo();
+            result.setSuccess(false);
+            result.setErrorMessage("连接设备失败");
+            return result;
+        }
+
+        boolean connected = dedicatedDeviceManager.connected;
+        log.info("connected :{}", connected);
+
+        if (connected) {
+            // 读取所有程序列表
+            PrgrmDirInfo programList = readAllPrograms(dedicatedDeviceManager.getReusableHandle().getValue());
+
+            if (programList.isSuccess()) {
+                log.info("设备程序列表读取成功，共找到 {} 个程序", programList.getPrograms().size());
+
+                // 输出程序信息
+                for (int i = 0; i < programList.getPrograms().size(); i++) {
+                    var program = programList.getPrograms().get(i);
+                    log.info("  程序 {}: 编号={}, 长度={}, 注释='{}'", i + 1, program.getNumber(), program.getLength(), program.getComment());
+                }
+            } else {
+                log.error("设备程序列表读取失败: {}", programList.getErrorMessage());
+            }
+
+            dLibraryService.cnc_freelibhndl(dedicatedDeviceManager.getReusableHandle().getValue());
+
+            return programList;
+        } else {
+            PrgrmDirInfo result = new PrgrmDirInfo();
+            result.setSuccess(false);
+            result.setErrorMessage("设备未连接");
+            return result;
+        }
+    }
+
+    /**
+     * 读取所有程序的高级功能方法
+     * 提供详细的错误处理和日志记录
+     *
+     * @param ipAddress CNC设备IP地址
+     * @param port      CNC设备端口
+     * @param type      信息类型: 0-程序号, 1-程序号和注释, 2-程序号、注释、日期和大小
+     * @return 包含详细程序信息的结果对象
+     */
+    public PrgrmDirInfo readAllProgramsAdvanced(String ipAddress, short port, short type) {
+        DedicatedDeviceManager dedicatedDeviceManager = new DedicatedDeviceManager(ipAddress, port);
+        boolean flag = dedicatedDeviceManager.establishConnection();
+
+        if (!flag) {
+            PrgrmDirInfo result = new PrgrmDirInfo();
+            result.setSuccess(false);
+            result.setErrorMessage("连接设备失败");
+            return result;
+        }
+
+        boolean connected = dedicatedDeviceManager.connected;
+        log.info("连接状态 :{}", connected);
+
+        if (connected) {
+            // 读取所有程序列表（自动检测最佳API）
+            PrgrmDirInfo programList = readAllProgramsAutoDetect(dedicatedDeviceManager.getReusableHandle().getValue());
+
+            if (programList.isSuccess()) {
+                log.info("设备程序列表读取成功，共找到 {} 个程序", programList.getPrograms().size());
+
+                // 输出程序信息
+                for (int i = 0; i < programList.getPrograms().size(); i++) {
+                    var program = programList.getPrograms().get(i);
+                    log.info("  程序 {}: 编号={}, 长度={}, 注释='{}'", i + 1, program.getNumber(), program.getLength(), program.getComment());
+                }
+            } else {
+                log.error("设备程序列表读取失败: {}", programList.getErrorMessage());
+            }
+
+            // 断开连接
+            dLibraryService.cnc_freelibhndl(dedicatedDeviceManager.getReusableHandle().getValue());
+
+            return programList;
+        } else {
+            PrgrmDirInfo result = new PrgrmDirInfo();
+            result.setSuccess(false);
+            result.setErrorMessage("设备未连接");
+            return result;
+        }
+    }
 
     private static String DLL_PATH;
 
@@ -210,7 +699,7 @@ public class FanucReadDevices {
             super();
         }
 
-        public ODBM(com.sun.jna.Pointer p) {
+        public ODBM(Pointer p) {
             super(p);
             read();
         }
@@ -248,7 +737,7 @@ public class FanucReadDevices {
             super();
         }
 
-        public ODBPRO(com.sun.jna.Pointer p) {
+        public ODBPRO(Pointer p) {
             super(p);
             read();
         }
@@ -276,7 +765,7 @@ public class FanucReadDevices {
             super();
         }
 
-        public ODBEXEPRG(com.sun.jna.Pointer p) {
+        public ODBEXEPRG(Pointer p) {
             super(p);
             read();
         }
@@ -438,6 +927,8 @@ public class FanucReadDevices {
          * @return 返回状态码，0(EW_OK)表示成功，非0表示失败
          */
         short cnc_dwnend3(short FlibHndl);
+
+        short cnc_upend4(short FlibHndl);
     }
 
     /**
@@ -456,9 +947,7 @@ public class FanucReadDevices {
             if (success) {
                 return "DownloadStartInfo{success=true, dataType=" + dataType + "}";
             } else {
-                return "DownloadStartInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "DownloadStartInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -720,11 +1209,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "ExecProgramInfo{success=true, actualLength=" + actualLength +
-                        ", blockNumber=" + blockNumber + ", programData='" + programData + "'}";
+                return "ExecProgramInfo{success=true, actualLength=" + actualLength + ", blockNumber=" + blockNumber + ", programData='" + programData + "'}";
             } else {
-                return "ExecProgramInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'}";
+                return "ExecProgramInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'}";
             }
         }
     }
@@ -824,18 +1311,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "DncDiagInfo{success=true, ctrlWord=" + ctrlWord +
-                        ", canWord=" + canWord +
-                        ", ncFile='" + ncFile + '\'' +
-                        ", readPtr=" + readPtr +
-                        ", writePtr=" + writePtr +
-                        ", emptyCount=" + emptyCount +
-                        ", totalSize=" + totalSize +
-                        '}';
+                return "DncDiagInfo{success=true, ctrlWord=" + ctrlWord + ", canWord=" + canWord + ", ncFile='" + ncFile + '\'' + ", readPtr=" + readPtr + ", writePtr=" + writePtr + ", emptyCount=" + emptyCount + ", totalSize=" + totalSize + '}';
             } else {
-                return "DncDiagInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + '\'' +
-                        '}';
+                return "DncDiagInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + '\'' + '}';
             }
         }
     }
@@ -959,12 +1437,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "PmcInfo{success=true, startAddress=" + startAddress +
-                        ", endAddress=" + endAddress + ", unit=" + unit +
-                        ", size=" + size + "}";
+                return "PmcInfo{success=true, startAddress=" + startAddress + ", endAddress=" + endAddress + ", unit=" + unit + ", size=" + size + "}";
             } else {
-                return "PmcInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'}";
+                return "PmcInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'}";
             }
         }
     }
@@ -1118,14 +1593,12 @@ public class FanucReadDevices {
             case 3: // 2-word type
                 if (paramAxis == 0 || paramAxis == 1) {
                     // 单个整型数据
-                    return (param.u[3] & 0xFF) << 24 | (param.u[2] & 0xFF) << 16 |
-                            (param.u[1] & 0xFF) << 8 | (param.u[0] & 0xFF);
+                    return (param.u[3] & 0xFF) << 24 | (param.u[2] & 0xFF) << 16 | (param.u[1] & 0xFF) << 8 | (param.u[0] & 0xFF);
                 } else {
                     // 多轴数据
                     int[] ints = new int[64]; // 假设最多64个轴
                     for (int i = 0; i < ints.length && (i * 4 + 3) < param.u.length; i++) {
-                        ints[i] = (param.u[i * 4 + 3] & 0xFF) << 24 | (param.u[i * 4 + 2] & 0xFF) << 16 |
-                                (param.u[i * 4 + 1] & 0xFF) << 8 | (param.u[i * 4] & 0xFF);
+                        ints[i] = (param.u[i * 4 + 3] & 0xFF) << 24 | (param.u[i * 4 + 2] & 0xFF) << 16 | (param.u[i * 4 + 1] & 0xFF) << 8 | (param.u[i * 4] & 0xFF);
                     }
                     return ints;
                 }
@@ -1170,14 +1643,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "ParameterInfo{success=true, paramNumber=" + paramNumber +
-                        ", paramType=" + paramType +
-                        ", axis=" + axis +
-                        ", data=" + data + "}";
+                return "ParameterInfo{success=true, paramNumber=" + paramNumber + ", paramType=" + paramType + ", axis=" + axis + ", data=" + data + "}";
             } else {
-                return "ParameterInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "ParameterInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1307,14 +1775,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "MacroVariableInfo{success=true, variableNumber=" + variableNumber +
-                        ", value=" + value +
-                        ", decimalPlaces=" + decimalPlaces +
-                        ", actualValue=" + getActualValue() + "}";
+                return "MacroVariableInfo{success=true, variableNumber=" + variableNumber + ", value=" + value + ", decimalPlaces=" + decimalPlaces + ", actualValue=" + getActualValue() + "}";
             } else {
-                return "MacroVariableInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "MacroVariableInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1417,12 +1880,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "ProgramNumberInfo{success=true, runningProgramNumber=" + runningProgramNumber +
-                        ", mainProgramNumber=" + mainProgramNumber + "}";
+                return "ProgramNumberInfo{success=true, runningProgramNumber=" + runningProgramNumber + ", mainProgramNumber=" + mainProgramNumber + "}";
             } else {
-                return "ProgramNumberInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "ProgramNumberInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1501,9 +1961,7 @@ public class FanucReadDevices {
             if (success) {
                 return "AlarmStatusInfo{success=true, alarmStatus=" + alarmStatus + "}";
             } else {
-                return "AlarmStatusInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "AlarmStatusInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1524,11 +1982,9 @@ public class FanucReadDevices {
         @Override
         public String toString() {
             if (success) {
-                return "ProgramNameInfo{success=true, programName='" + programName + "', " +
-                        "programNumber=" + programNumber + "}";
+                return "ProgramNameInfo{success=true, programName='" + programName + "', " + "programNumber=" + programNumber + "}";
             } else {
-                return "ProgramNameInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'}";
+                return "ProgramNameInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'}";
             }
         }
     }
@@ -1674,9 +2130,7 @@ public class FanucReadDevices {
             if (success) {
                 return "DownloadInfo{success=true, dataLength=" + dataLength + "}";
             } else {
-                return "DownloadInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "DownloadInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1696,9 +2150,7 @@ public class FanucReadDevices {
             if (success) {
                 return "DownloadEndInfo{success=true}";
             } else {
-                return "DownloadEndInfo{success=false, errorCode=" + errorCode +
-                        ", errorMessage='" + errorMessage + "'" +
-                        '}';
+                return "DownloadEndInfo{success=false, errorCode=" + errorCode + ", errorMessage='" + errorMessage + "'" + '}';
             }
         }
     }
@@ -1708,13 +2160,7 @@ public class FanucReadDevices {
      */
     @Getter
     public enum DownloadDataType {
-        NC_PROGRAM((short) 0, "NC程序"),
-        TOOL_OFFSET_DATA((short) 1, "刀具偏置数据"),
-        PARAMETER((short) 2, "参数"),
-        PITCH_ERROR_COMPENSATION_DATA((short) 3, "螺距误差补偿数据"),
-        CUSTOM_MACRO_VARIABLES((short) 4, "自定义宏变量"),
-        WORK_ZERO_OFFSET_DATA((short) 5, "工件零点偏置数据"),
-        ROTARY_TABLE_DYNAMIC_FIXTURE_OFFSET((short) 18, "旋转台动态夹具偏置");
+        NC_PROGRAM((short) 0, "NC程序"), TOOL_OFFSET_DATA((short) 1, "刀具偏置数据"), PARAMETER((short) 2, "参数"), PITCH_ERROR_COMPENSATION_DATA((short) 3, "螺距误差补偿数据"), CUSTOM_MACRO_VARIABLES((short) 4, "自定义宏变量"), WORK_ZERO_OFFSET_DATA((short) 5, "工件零点偏置数据"), ROTARY_TABLE_DYNAMIC_FIXTURE_OFFSET((short) 18, "旋转台动态夹具偏置");
 
         private final short value;
         private final String description;
@@ -1797,6 +2243,39 @@ public class FanucReadDevices {
      */
     public DownloadStartInfo startDownloadWithError(short handle, DownloadDataType dataType) {
         return startDownloadWithError(handle, dataType.getValue());
+    }
+
+    /**
+     * 获取通用错误描述
+     *
+     * @param errorCode 错误代码
+     * @return 错误描述文本
+     */
+    public String getCommonErrorDescription(short errorCode) {
+        switch (errorCode) {
+            case 0:
+                return "操作成功";
+            case -1:
+                return "设备忙 (EW_BUSY) - 可能原因：其他操作正在进行中";
+            case -7:
+                return "非法命令或规格 (EW_NOPMC) - 可能原因：CNC设备不支持该功能或参数设置不当";
+            case 4:
+                return "数据属性错误 (EW_ATTRIB) - 数据类型不合法";
+            case 6:
+                return "无选项 (EW_NOOPT) - 目标数据需要特定选项（如自定义宏变量、螺距误差补偿数据等）";
+            case 9:
+                return "CNC参数错误 (EW_PARAM) - 参数设置不正确（如输入设备参数错误）";
+            case 12:
+                return "CNC模式错误 (EW_MODE) - CNC当前模式不适合此操作";
+            case 13:
+                return "CNC执行被拒绝 (EW_REJECT) - CNC正在加工，无法进行下载操作";
+            case 15:
+                return "报警状态 (EW_ALARM) - CNC处于报警状态，需要先复位报警";
+            case 17:
+                return "密码保护 (EW_PASSWD) - 指定的CNC数据受密码保护，无法写入";
+            default:
+                return "未知错误代码: " + errorCode;
+        }
     }
 
     /**
@@ -1884,6 +2363,31 @@ public class FanucReadDevices {
         dataWithNullTerminator[programBytes.length] = 0; // 添加NULL终止符
 
         return downloadData(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+    }
+
+    /**
+     * 从文件下载NC程序到CNC
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle   库句柄（通过 cnc_allclibhndl3 获取）
+     * @param filePath NC程序文件路径
+     * @return 下载信息，如果失败则返回 null
+     */
+    public DownloadInfo downloadProgramFromFile(short handle, String filePath) {
+        try {
+            // 读取文件内容
+            byte[] fileContent = Files.readAllBytes(Paths.get(filePath));
+
+            // 确保数据以NULL结尾
+            byte[] dataWithNullTerminator = new byte[fileContent.length + 1];
+            System.arraycopy(fileContent, 0, dataWithNullTerminator, 0, fileContent.length);
+            dataWithNullTerminator[fileContent.length] = 0; // 添加NULL终止符
+
+            return downloadData(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+        } catch (IOException e) {
+            System.err.println("读取文件失败: " + e.getMessage());
+            return null;
+        }
     }
 
     /**
@@ -2012,6 +2516,66 @@ public class FanucReadDevices {
                 return "报警状态 (EW_ALARM) - CNC处于报警状态，需要先复位报警";
             default:
                 return "未知错误代码: " + errorCode;
+        }
+    }
+
+    /**
+     * 从文件下载NC程序到CNC（带错误处理）
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle   库句柄（通过 cnc_allclibhndl3 获取）
+     * @param filePath NC程序文件路径
+     * @return 包含下载信息和错误代码的结果对象
+     */
+    public DownloadInfo downloadProgramFromFileWithError(short handle, String filePath) {
+        try {
+            // 读取文件内容
+            byte[] fileContent = Files.readAllBytes(Paths.get(filePath));
+
+            // 确保数据以NULL结尾
+            byte[] dataWithNullTerminator = new byte[fileContent.length + 1];
+            System.arraycopy(fileContent, 0, dataWithNullTerminator, 0, fileContent.length);
+            dataWithNullTerminator[fileContent.length] = 0; // 添加NULL终止符
+
+            return downloadDataWithError(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+        } catch (IOException e) {
+            System.err.println("读取文件失败: " + e.getMessage());
+
+            DownloadInfo info = new DownloadInfo();
+            info.setSuccess(false);
+            info.setErrorCode((short) -1);
+            info.setErrorMessage("读取文件失败: " + e.getMessage());
+            return info;
+        }
+    }
+
+    /**
+     * 从File对象下载NC程序到CNC（带错误处理）
+     * （此函数必须在cnc_dwnstart3之后执行）
+     *
+     * @param handle 库句柄（通过 cnc_allclibhndl3 获取）
+     * @param file   NC程序文件对象
+     * @return 包含下载信息和错误代码的结果对象
+     */
+    public DownloadInfo downloadProgramFromFileWithError(short handle, File file) {
+        try {
+            // 读取文件内容
+            byte[] fileContent = Files.readAllBytes(file.toPath());
+
+            // 确保数据以NULL结尾
+            byte[] dataWithNullTerminator = new byte[fileContent.length + 1];
+            System.arraycopy(fileContent, 0, dataWithNullTerminator, 0, fileContent.length);
+            dataWithNullTerminator[fileContent.length] = 0; // 添加NULL终止符
+
+            return downloadDataWithError(handle, dataWithNullTerminator, dataWithNullTerminator.length);
+        } catch (IOException e) {
+            System.err.println("读取文件失败: " + e.getMessage());
+
+            DownloadInfo info = new DownloadInfo();
+            info.setSuccess(false);
+            info.setErrorCode((short) -1);
+            info.setErrorMessage("读取文件失败: " + e.getMessage());
+            return info;
         }
     }
 
